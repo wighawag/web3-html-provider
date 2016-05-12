@@ -123,13 +123,13 @@
 			<p id="infomessage">Please wait...</p>
 		</div>
 		
-		<div id="form" class="wrapper">
+		<form id="form" class="wrapper">
 			<br/>
 			<p id="message" class="message"></p>
 			<p id="passwordField"><label>Password Required:</label><input id="password" type="password" /></p>
-			<button id="cancel-button" autofocus>Cancel</button>
-			<button id="confirm-button" >Confirm</button>
-		</div>
+			<button id="cancel-button" type="button" autofocus>Cancel</button>
+			<button id="confirm-button" type="button" >Confirm</button>
+		</form>
 	
 		<div id="modal-dialog" class="wrapper">
 			<h3 id="modal-dialog-title" class="title">Title</h3>
@@ -138,11 +138,14 @@
 		</div>
 			
 		<script>
+		var noMessageReceivedYet = true;
+		var closedByCode = false;
 		var pleaseWait = document.getElementById("pleasewait");
 		var form = document.getElementById("form");
 		var cancelButton = document.getElementById("cancel-button");
 		var confirmButton = document.getElementById("confirm-button");
 		var message = document.getElementById("message");
+		var infoMessage = document.getElementById("infomessage");
 		var password = document.getElementById("password");
 		var passwordField = document.getElementById("passwordField");
 		var modalDialog = document.getElementById("modal-dialog");
@@ -160,10 +163,20 @@
 		}else if(window.parent != window){
 			source = window.parent;
 		}else{
-			console.error("no opener nor parent");
+			console.log("closing");
+			window.close();
 		}
 		
-		function showWaiting(){
+		function closeWindow(){
+			closedByCode = true;
+			window.close();
+		}
+		
+		function showWaiting(text){
+			if(!text){
+				text = "Please wait..."
+			}
+			infoMessage.innerHTML = text;
 			pleaseWait.style.display = "block";
 			form.style.display = "none";
 		}
@@ -171,6 +184,8 @@
 		function hideWaiting(){
 			pleaseWait.style.display = "none";
 			form.style.display = "block";
+			
+			window.onbeforeunload = null;
 		}
 			
 		function showMessage(title, message, callback, buttonText){
@@ -196,9 +211,13 @@
 				}
 			}
 		}
+		
+		function hideMessage(){
+			modalDialog.style.display = "none";
+			modalDialogButton.onclick = null;
+		}
 			
 		function sendAsync(url,payload, callback) {
-			//var url = window.location.protocol + '//' + window.location.host; // this would force the use of the iframe url
 			var request = new XMLHttpRequest();
 			request.open('POST', url, true);
 			request.setRequestHeader('Content-Type','application/json'); 
@@ -211,7 +230,7 @@
 						result = JSON.parse(result);
 					} catch(e) {
 						var message = !!result && !!result.error && !!result.error.message ? result.error.message : 'Invalid JSON RPC response: ' + JSON.stringify(result);
-						error = {message:message};
+						error = {message:message,type:"JsonParse"};
 					}
 					callback(error, result);
 				}
@@ -220,7 +239,7 @@
 			try {
 				request.send(JSON.stringify(payload));
 			} catch(e) {
-				callback({message:'CONNECTION ERROR: Couldn\'t connect to node '+ url +'.'});
+				callback({message:'CONNECTION ERROR: Couldn\'t connect to node '+ url +'.',type:"noConnection"});
 			}
 		}
 		
@@ -230,8 +249,7 @@
 				size: 8,
 				scale: 6
 			});
-			//icon.style="vertical-align:middle";
-			message.appendChild(icon); //
+			message.appendChild(icon);
 		}
 		
 		function askAuthorization(transactionInfo, data, requireUnlock, sourceWindow){
@@ -256,7 +274,6 @@
 			var span = document.createElement('span');
 			span.style="font-size:3em;";
 			span.innerHTML = "&nbsp;&nbsp;&nbsp;" + "&#x2192;" + "&nbsp;&nbsp;&nbsp;";
-			//span.innerHTML = "&#10145;";
 			message.appendChild(span);
 			
 			addBlocky(message,transactionInfo.to);
@@ -267,50 +284,56 @@
 			textSpan.innerHTML = etherValue.toFormat() + " ether <br/>  + gas cost (" + gasEtherValue.toFormat() + " ether )"
 			
 			if(requireUnlock){
-				passwordField.style.display = "block"; //inline ?
+				passwordField.style.display = "block"; 
 			}else{
 				passwordField.style.display = "none"; 
 			}
 			
 			cancelButton.onclick = function(){
-				sourceWindow.postMessage({id:data.id,result:null,error:{message:"Not Authorized"}},sourceWindow.location.href);
-				window.close();
+				sourceWindow.postMessage({id:data.id,result:null,error:{message:"Not Authorized"},type:"cancel"},firstUrl);
+				closeWindow();
 			}
 			
-			confirmButton.onclick = function(){
+			var submitFunc = function(){
+				window.onbeforeunload = function (event) {
+					if(!closedByCode){
+						return "do not close now as a transaction is progress, this cannot be canceled and we wait for an answer";
+					}
+				};
 				if(requireUnlock){
 					if(password.value == ""){
 						password.style.border = "2px solid red";
-						return;
+						return false;
 					}
 					password.style.border = "none";
 					var params = [transactionInfo.from,password.value,3];
-					showWaiting();
+					showWaiting("Please wait...<br/>Do not close the window.");
 					sendAsync(data.url,{id:999992,method:"personal_unlockAccount",params:params},function(error,result){
 						if(error || result.error){
 							showMessage("Error unlocking account", "Please retry.", hideWaiting);
 						}else{
-							sendAsync(data.url,data.payload,function(error,result){ //data.url to allow use of different but trusted domain
-								sourceWindow.postMessage({id:data.id,result:result,error:error},sourceWindow.location.href);
-								window.close();
+							sendAsync(data.url,data.payload,function(error,result){
+								sourceWindow.postMessage({id:data.id,result:result,error:error},firstUrl);
+								closeWindow();
 							});
-							showWaiting();
 						}
 					});
 				}else{
-					sendAsync(data.url,data.payload,function(error,result){ //data.url to allow use of different but trusted domain
+					sendAsync(data.url,data.payload,function(error,result){
 						if(result && result.error){
 							processMessage(data,sourceWindow);
 						}else{
-							sourceWindow.postMessage({id:data.id,result:result,error:error},sourceWindow.location.href);
-							window.close();
+							sourceWindow.postMessage({id:data.id,result:result,error:error},firstUrl);
+							closeWindow();
 						}
 					});
 					showWaiting();
 				}
-				
+				return false;
 			}
 			
+			form.onsubmit = submitFunc;
+			confirmButton.onclick = submitFunc;
 		}
 		
 		function needToAndCanUnlockAccount(address,url,callback){
@@ -330,6 +353,9 @@
 		}
 			
 		function receiveMessage(event){
+			if(event.source != source){
+				return;
+			}
 			if(firstUrl){
 				if(firstUrl != event.origin){
 					return;
@@ -337,59 +363,141 @@
 			}else{
 				firstUrl = event.origin;
 			}
+			hideMessage();
+			noMessageReceivedYet = false;
 			var data = event.data;
-			processMessage(data,event.source);
+			try{
+				processMessage(data,event.source);
+			}catch(e){
+				event.source.postMessage({id:data.id,result:null,error:{message:"Could not process message data"},type:"notValid"},firstUrl);
+				showMessage("Error","The application has sent invalid data", function(){
+					closeWindow();
+				});
+			}
+			
+		}
+		
+		var allowedMethods = [
+			 "web3_clientVersion"
+			,"web3_sha3"
+			,"net_version"
+			,"net_peerCount"
+			,"net_listening"
+			,"eth_protocolVersion"
+			,"eth_syncing"
+			,"eth_coinbase"
+			,"eth_mining"
+			,"eth_hashrate"
+			,"eth_gasPrice"
+			,"eth_accounts"
+			,"eth_blockNumber"
+			,"eth_getBalance"
+			,"eth_getStorageAt"
+			,"eth_getTransactionCount"
+			,"eth_getBlockTransactionCountByHash"
+			,"eth_getBlockTransactionCountByNumber"
+			,"eth_getUncleCountByBlockHash"
+			,"eth_getUncleCountByBlockNumber"
+			,"eth_getCode"
+			,"eth_sendRawTransaction"
+			,"eth_call"
+			,"eth_estimateGas"
+			,"eth_getBlockByHash"
+			,"eth_getBlockByNumber"
+			,"eth_getTransactionByHash"
+			,"eth_getTransactionByBlockHashAndIndex"
+			,"eth_getTransactionByBlockNumberAndIndex"
+			,"eth_getTransactionReceipt"
+			,"eth_getUncleByBlockHashAndIndex"
+			,"eth_getUncleByBlockNumberAndIndex"
+			,"eth_getCompilers"
+			,"eth_compileLLL"
+			,"eth_compileSolidity"
+			,"eth_compileSerpent"
+			,"eth_newFilter"
+			,"eth_newBlockFilter"
+			,"eth_newPendingTransactionFilter"
+			,"eth_uninstallFilter"
+			,"eth_getFilterChanges"
+			,"eth_getFilterLogs"
+			,"eth_getLogs"
+			,"eth_getWork"
+			,"eth_submitWork"
+			,"eth_submitHashrate"
+			// ,"shh_post"
+			// ,"shh_version"
+			// ,"shh_newIdentity"
+			// ,"shh_hasIdentity"
+			// ,"shh_newGroup"
+			// ,"shh_addToGroup"
+			// ,"shh_newFilter"
+			// ,"shh_uninstallFilter"
+			// ,"shh_getFilterChanges"
+			// ,"shh_getMessages"
+		];
+		
+		function isMethodAllowed(method){
+			return allowedMethods.indexOf(method) != -1;
 		}
 		
 		function processMessage(data, sourceWindow){
-			if(data.payload.method == "eth_sendTransaction" || data.payload.method == "eth_sign"){
-				if(inIframe){
-					sourceWindow.postMessage({id:data.id,result:null,error:{message:"Cannot make call that require an unlokced key (" + data.payload.method + ") via iframe"}},sourceWindow.location.href);
-				}else if(data.payload.method == "eth_sign"){
-					sourceWindow.postMessage({id:data.id,result:null,error:{message:"cannot sign transaction (" + data.payload.method + ") via html"}},sourceWindow.location.href);
+			
+			if(inIframe){
+				if(isMethodAllowed(data.payload.method)){
+					sendAsync(data.url,data.payload,function(error,result){
+						sourceWindow.postMessage({id:data.id,result:result,error:error},firstUrl);
+					});
 				}else{
-					var transactionInfo = null;
-					if(data.payload.params.length > 0){ 
-						if(data.payload.params[0]["gas"] && data.payload.params[0]["gasPrice"] && data.payload.params[0]["to"] && data.payload.params[0]["from"]){
-							transactionInfo = data.payload.params[0];
-						}
-					}
-					if(transactionInfo != null){
-						needToAndCanUnlockAccount(transactionInfo.from,data.url,function(requireUnlock,canUnlock){
-							if(requireUnlock && canUnlock){
-								askAuthorization(transactionInfo,data,true, sourceWindow);
-							}else if(!requireUnlock){
-								askAuthorization(transactionInfo,data,false,sourceWindow);
-							}else if(requireUnlock && !canUnlock){
-								var messageHtml = document.createElement('span');
-								addBlocky(messageHtml,transactionInfo.from); 
-								messageHtml.appendChild(document.createElement('br'));
-								var span = document.createElement('span');
-								span.innerHTML = "You need to unlock your account first : <br/>" + transactionInfo.from;
-								messageHtml.appendChild(span);
-								
-								showMessage("Account Locked",messageHtml,function(){
-									processMessage(data,sourceWindow);
-								}, "Done");
-							}
-							
-						});
-					}else{
-						sourceWindow.postMessage({id:data.id,result:null,error:{message:"Need to specify from , to,  gas and gasPrice"}},sourceWindow.location.href);
-						window.close();
+					sourceWindow.postMessage({id:data.id,result:null,error:{message:"method (" + data.payload.method + ") not allowed in iframe"},type:"notAllowed"},firstUrl);
+				}
+			}else if(data.payload.method == "eth_sendTransaction"){
+				var transactionInfo = null;
+				if(data.payload.params.length > 0){ 
+					if(data.payload.params[0]["gas"] && data.payload.params[0]["gasPrice"] && data.payload.params[0]["to"] && data.payload.params[0]["from"]){
+						transactionInfo = data.payload.params[0];
 					}
 				}
+				if(transactionInfo != null){
+					needToAndCanUnlockAccount(transactionInfo.from,data.url,function(requireUnlock,canUnlock){
+						if(requireUnlock && canUnlock){
+							askAuthorization(transactionInfo,data,true, sourceWindow);
+						}else if(!requireUnlock){
+							askAuthorization(transactionInfo,data,false,sourceWindow);
+						}else if(requireUnlock && !canUnlock){
+							var messageHtml = document.createElement('span');
+							addBlocky(messageHtml,transactionInfo.from); 
+							messageHtml.appendChild(document.createElement('br'));
+							var span = document.createElement('span');
+							span.innerHTML = "You need to unlock your account first : <br/>" + transactionInfo.from;
+							messageHtml.appendChild(span);
+							
+							showMessage("Account Locked",messageHtml,function(){
+								processMessage(data,sourceWindow);
+							}, "Done");
+						}
+						
+					});
+				}else{
+					sourceWindow.postMessage({id:data.id,result:null,error:{message:"Need to specify from , to, gas and gasPrice"},type:"notValid"},firstUrl);
+					closeWindow();
+				}
 			}else{
-				sendAsync(data.url,data.payload,function(error,result){ //data.url to allow use of different but trusted domain
-					sourceWindow.postMessage({id:data.id,result:result,error:error},sourceWindow.location.href);
+				sourceWindow.postMessage({id:data.id,result:null,error:{message:"method (" + data.payload.method + ") not allowed in popup"},type:"notAllowed"},firstUrl);
+			}			
+		}
+		
+		function checkMessageNotReceived(){
+			if(noMessageReceivedYet){
+				showMessage("Error","No transaction received. Please make sure popup are not blocked.", function(){
+					closeWindow();
 				});
 			}
 		}
-		
+		setTimeout(checkMessageNotReceived,1000);
 		
 		window.addEventListener("message", receiveMessage);
 		if(source){
-			source.postMessage("ready",source.location.href);
+			source.postMessage("ready","*");
 		}
 		
 		</script>

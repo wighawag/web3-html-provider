@@ -29,21 +29,21 @@ var HtmlProvider = function (url, trustedHost) {
 	var self = this;
 
 	this.handleEvent = function(event){
-		if(event.type != "message"){
+		if(event.source != self.currentPopup && event.source != self.iframe.contentWindow){
+			return;
+		}
+		if(event.type != "message" || event.origin != self.trustedHost){
 			return;
 		}
 		
 		var data = event.data;
-		if(data == "ready"){
-			
-		}else{
+		if(data != "ready"){			
 			var callback = self.callbacks[data.id];
 			delete self.callbacks[data.id];
 			callback(data.error, data.result);
 		}
 	}	
 	
-	//TODO IE check addEventListener
 	window.addEventListener("message", this);
 	
 	
@@ -85,12 +85,12 @@ HtmlProvider.prototype.sendAsync = function (payload, callback) {
 		var h = 250;
 		var x = window.screenX + windowWidth/2 - w/2;
 		var y = window.screenY + windowHeight/2 - h/2;
-		//TODO reuse same windowId ?
-		var windowId = "html-provider-window";
-		//var windowId = null;
+		
+		var windowId = "html-provider-window" + window.location.href;
 		var popupUrl = this.iframe.src;
 		if(this.currentPopup && !this.currentPopup.closed){
-			popupUrl = null;
+			callback({message:"existing popup",type:"error"});
+			return;
 		}
 		var popup = window.open(popupUrl,windowId,"left="+x+",top="+y+",width="+w+",height="+h+",toolbar=0,menubar=0,location=1,personalbar=0,dependent=1,minimizable=0,resizable=0,scrollbars=0,chrome=1,dialog=1,modal=1,alwaysRaised=1,close=0");
 		
@@ -100,20 +100,21 @@ HtmlProvider.prototype.sendAsync = function (payload, callback) {
 			var counter = self.counter;
 			self.callbacks[counter]=callback;
 			self.counter++;
-			popup.onload=function(){
-				popup.postMessage({id:counter,payload:payload,url:self.url},self.trustedHost);
+			var onReady = function(event){
+				if(event.data == "ready"){
+					window.removeEventListener("message", onReady);
+					popup.postMessage({id:counter,payload:payload,url:self.url},self.trustedHost);
+				}
 			}
-			if(popupUrl == null){
-				popup.postMessage({id:counter,payload:payload,url:self.url},self.trustedHost);
-			}
+			window.addEventListener("message", onReady);
 			
 			var interval = window.setInterval(function() {
 				try {
 					if(!self.callbacks[counter]){
 						window.clearInterval(interval);
-						//popup.close();
-					}else if (popup == null || popup.closed) { //TODO check if closed work across browser, else fall back
-						self.callbacks[counter]({message:"window closed"});
+					}else if (popup == null || popup.closed) {
+						self.currentPopup = null;
+						self.callbacks[counter]({message:"window closed", type:"cancel"});
 						delete self.callbacks[counter];
 						window.clearInterval(interval);
 					}
@@ -122,9 +123,7 @@ HtmlProvider.prototype.sendAsync = function (payload, callback) {
 				}
 			}, 500);
 		}else{
-			var error = new Error('ERROR: Couldn\'t open window to provide authorization at '+ this.iframe.src);
-			console.error(error);
-			callback(error);
+			callback({message:'ERROR: Couldn\'t open window to provide authorization at '+ this.iframe.src,type:"error"});
 		}
 		
 		return;	
@@ -140,9 +139,7 @@ HtmlProvider.prototype.sendAsync = function (payload, callback) {
 		this.iframe.contentWindow.postMessage({id:this.counter,payload:payload,url:this.url},this.trustedHost);
 		this.counter++;
 	} catch(e) {
-		var error = new Error('ERROR: Couldn\'t postMessage to iframe at '+ this.iframe.location.href);
-		console.error(error);
-		callback(error);
+		callback({message:'ERROR: Couldn\'t postMessage to iframe at '+ this.iframe.location.href,type:"error"});
 	}
 };
 
